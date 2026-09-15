@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment / secrets - never commit
+.env
+
+# Django
+*.log
+staticfiles/
+media/
+db.sqlite3
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Data outputs (import logs, failures, retry artifacts, README)
+data/
+
+# Fuel price dataset - proprietary, not part of the repo
+fuel-prices-for-be-assessment.csv
+
+# Assessment brief - not part of the repo
+prompt.txt

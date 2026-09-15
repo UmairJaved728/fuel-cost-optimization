@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fuel Route Optimizer &middot; Demo</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; display: flex; min-height: 100vh; }
+    #sidebar {
+      width: 360px; padding: 16px; box-sizing: border-box;
+      background: #f6f7f9; border-right: 1px solid #ddd; overflow-y: auto;
+    }
+    #map { flex: 1; height: 100vh; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    label { display: block; margin: 10px 0 2px; font-size: 12px; font-weight: 600; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: 6px; font-size: 13px; }
+    input[type=checkbox] { margin-right: 6px; }
+    button {
+      margin-top: 14px; width: 100%; padding: 9px; font-size: 14px; cursor: pointer;
+      background: #1f6feb; color: #fff; border: 0; border-radius: 6px;
+    }
+    button:disabled { opacity: .5; cursor: default; }
+    #summary { margin-top: 14px; font-size: 13px; line-height: 1.5; }
+    #errors { color: #b42318; font-size: 13px; margin-top: 12px; white-space: pre-wrap; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+    th, td { border-top: 1px solid #e2e4e8; padding: 4px 6px; text-align: left; }
+    th { background: #eceef1; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h1>Fuel Route Optimizer</h1>
+    <p style="font-size:12px;color:#555">
+      Finds fuel stops near an OSRM driving route and computes a minimum-cost
+      refuelling plan for a truck (10 mpg, 500&nbsp;mi range).
+    </p>
+
+    <label for="start">Start</label>
+    <input type="text" id="start" placeholder="Address or &quot;lat, lon&quot;" value="Kansas City, MO">
+
+    <label for="finish">Finish</label>
+    <input type="text" id="finish" placeholder="Address or &quot;lat, lon&quot;" value="Albuquerque, NM">
+
+    <div style="margin-top:10px">
+      <input type="checkbox" id="useCoords" style="width:auto">
+      <label for="useCoords" style="display:inline">Use coordinates instead of addresses</label>
+    </div>
+
+    <button id="planBtn">Plan route</button>
+
+    <div id="summary"></div>
+    <div id="errors"></div>
+  </div>
+  <div id="map"></div>
+
+  <script>
+    const map = L.map('map').setView([37.5, -99.5], 6);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '&copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+      maxZoom: 19
+    }).addTo(map);
+
+    const planBtn = document.getElementById('planBtn');
+    const startEl = document.getElementById('start');
+    const finishEl = document.getElementById('finish');
+    const useCoords = document.getElementById('useCoords');
+    const summary = document.getElementById('summary');
+    const errors = document.getElementById('errors');
+
+    let routeLayer = L.layerGroup().addTo(map);
+
+    function parseCoordInput(raw) {
+      const parts = raw.split(',').map(s => s.trim());
+      if (parts.length !== 2) return null;
+      const lat = parseFloat(parts[0]);
+      const lon = parseFloat(parts[1]);
+      if (Number.isNaN(lat) || Number.isNaN(lon)) return null;
+      return { latitude: lat, longitude: lon };
+    }
+
+    function buildLocation(raw) {
+      if (useCoords.checked) {
+        const coords = parseCoordInput(raw);
+        if (!coords) return { error: 'Coordinates must look like "39.1, -94.5" (lat, lon).' };
+        return coords;
+      }
+      return { address: raw };
+    }
+
+    async function plan() {
+      errors.textContent = '';
+      summary.innerHTML = '';
+      planBtn.disabled = true;
+
+      const start = buildLocation(startEl.value);
+      const finish = buildLocation(finishEl.value);
+      if (start.error || finish.error) {
+        errors.textContent = start.error || finish.error;
+        planBtn.disabled = false;
+        return;
+      }
+
+      try {
+        const resp = await fetch('/api/v1/routes/plan/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start, finish })
+        });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+          errors.textContent = JSON.stringify(data.error || data, null, 2);
+          planBtn.disabled = false;
+          return;
+        }
+
+        render(data);
+      } catch (e) {
+        errors.textContent = 'Network error: ' + e.message;
+        planBtn.disabled = false;
+      }
+    }
+
+    function render(data) {
+      routeLayer.clearLayers();
+
+      const coords = data.route.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+      const poly = L.polyline(coords, { color: '#1f6feb', weight: 5 }).addTo(routeLayer);
+      map.fitBounds(poly.getBounds());
+
+      data.fuel_stops.forEach(stop => {
+        const s = stop.station;
+        L.circleMarker([s.latitude, s.longitude], {
+          radius: 7, color: '#fff', weight: 2, fillColor: '#b45309', fillOpacity: 1
+        })
+          .addTo(routeLayer)
+          .bindTooltip(`Stop ${stop.stop_number}: ${s.name} $${stop.retail_price_per_gallon}`);
+      });
+
+      const plan = data.fuel_plan;
+      summary.innerHTML = `
+        <b>Route:</b> ${data.route.distance_miles.toLocaleString()} mi, ${data.route.duration_minutes} min<br>
+        <b>Fuel cost:</b> $${plan.total_fuel_cost} (${plan.total_fuel_purchased_gallons} gal)<br>
+        <b>Stops:</b> ${data.fuel_stops.length}
+        ${data.fuel_stops.length ? `
+        <table>
+          <tr><th>#</th><th>Station</th><th>Price</th><th>Gal</th><th>Cost</th></tr>
+          ${data.fuel_stops.map(s => `<tr>
+            <td>${s.stop_number}</td>
+            <td>${s.station.name} ${s.station.city}, ${s.station.state}</td>
+            <td>$${s.retail_price_per_gallon}</td>
+            <td>${s.fuel_purchased_gallons}</td>
+            <td>$${s.estimated_cost}</td>
+          </tr>`).join('')}
+        </table>` : ''}`;
+      planBtn.disabled = false;
+    }
+
+    planBtn.addEventListener('click', plan);
+  </script>
+</body>
+</html>
