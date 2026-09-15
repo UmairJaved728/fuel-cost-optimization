@@ -422,3 +422,62 @@ If either service is unreachable the API degrades with explicit codes:
   (50 gal).
 * The public OSRM/Nominatim servers are shared infrastructure — response latency
   depends on them.
+
+---
+
+## 13. Project structure
+
+```
+fuel-cost-optimization/
+├── config/
+│   ├── settings.py          Django settings (env-driven, GDAL/GEOS auto-discovery)
+│   ├── urls.py              Root URL routing (API + schema + demo)
+│   └── wsgi.py / asgi.py
+│
+├── routes/
+│   ├── models.py            Station model (PostGIS PointField, identity, retail_price)
+│   ├── views.py             PlanView — POST /api/v1/routes/plan/
+│   ├── serializers.py       PlanRequestSerializer / FuelStopSerializer
+│   ├── exceptions.py        Typed error hierarchy → {"error":{"code","message"}}
+│   ├── urls.py              /api/v1/routes/plan/
+│   │
+│   ├── services/            Business logic (each file = one concern)
+│   │   ├── geocoding_client.py   Nominatim HTTP wrapper (country-code check)
+│   │   ├── routing_client.py     OSRM HTTP wrapper (polyline decode, caching)
+│   │   ├── cache_service.py      Django cache helpers (geocode + route)
+│   │   ├── station_service.py    PostGIS dwithin corridor query
+│   │   ├── route_service.py      Orchestrator: geocode → route → stations → plan
+│   │   ├── fuel_optimizer.py     Greedy price optimizer (+ brute-force validator)
+│   │   └── usa_boundary.py       Coarse CONUS outline for input validation
+│   │
+│   ├── management/commands/
+│   │   ├── import_stations.py         CSV → DB (dedup, geocode, bulk insert)
+│   │   └── retry_station_geocoding.py 3-provider retry (Photon→Nominatim→Open-Meteo)
+│   │
+│   ├── templates/demo.html   Leaflet interactive demo
+│   └── tests/                106 offline pytest tests (no network)
+│       ├── conftest.py       dense_line() helper + mocks
+│       ├── test_fuel_optimizer.py  Greedy vs brute-force correctness
+│       ├── test_api.py       Plan endpoint integration
+│       ├── test_import_stations.py  Full pipeline mock
+│       ├── test_retry_station_geocoding.py  3-provider retry tests
+│       └── ...
+│
+├── scripts/
+│   └── preprocess_stations.py  Convenience wrapper → import_stations
+│
+├── .env.example     Copy to .env and fill in local DB credentials
+├── requirements.txt Python deps (Django, GeoDjango, pytest, etc.)
+├── pytest.ini        pytest config
+└── manage.py         Django entry point
+```
+
+**Data flow for a plan request:**
+```
+POST start/finish
+  → geocode (Nominatim, cached)
+  → OSRM route (polyline + duration, cached)
+  → PostGIS corridor query (dwithin 10 mi, spatial index)
+  → greedy optimizer (buy just-enough at cheapest reachable)
+  → JSON response (route, fuel stops, cost breakdown)
+```
